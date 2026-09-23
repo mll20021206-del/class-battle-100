@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>班级大作战 · 主持端</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="host-body">
+<div class="host-shell">
+  <header><div><span class="pill">AI课堂互动</span><h1>班级大作战</h1><p>最多 100 人 · 微信扫码即玩</p></div>
+  <div class="online"><b id="count">0</b><span>/100 已加入</span></div></header>
+
+  <main class="host-grid">
+    <section class="card join-card">
+      <h2>扫码加入游戏</h2>
+      <div id="createBox"><button id="createBtn" class="primary big">创建课堂房间</button></div>
+      <div id="roomBox" hidden>
+        <img id="qr" class="qr"><div class="room-code">房间号 <b id="roomCode"></b></div>
+        <p class="muted">同学用微信扫一扫，打开网页后输入昵称即可。</p>
+      </div>
+    </section>
+
+    <section class="card stage-card">
+      <div id="lobby">
+        <h2>等待同学加入</h2>
+        <div id="players" class="players"></div>
+        <button id="startBtn" class="primary big" disabled>开始游戏</button>
+      </div>
+      <div id="game" hidden>
+        <div class="round" id="round"></div>
+        <h2 id="qTitle"></h2>
+        <div id="qText" class="question"></div>
+        <div id="qOptions" class="host-options"></div>
+        <div class="answer-progress">已作答 <b id="answered">0</b>/<span id="totalPlayers">0</span></div>
+        <button id="nextBtn" class="primary">下一题</button>
+      </div>
+      <div id="finish" hidden>
+        <h2>🏆 游戏结束</h2>
+        <div id="winner" class="winner"></div>
+        <div id="ranking"></div>
+      </div>
+    </section>
+
+    <section class="card score-card">
+      <h2>实时战况</h2>
+      <div class="teams"><div><span>🔴 红队</span><b id="redScore">0</b></div><div><span>🔵 蓝队</span><b id="blueScore">0</b></div></div>
+      <h3>个人排行榜</h3><ol id="miniRank"></ol>
+    </section>
+  </main>
+</div>
+<script src="/socket.io/socket.io.js"></script><script src="host.js"></script>
+</body></html>

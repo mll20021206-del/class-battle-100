@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>班级大作战</title><link rel="stylesheet" href="style.css"></head>
+<body class="player-body">
+<div class="phone">
+  <div id="joinView" class="mobile-card">
+    <span class="pill">CLASS BATTLE</span><h1>班级大作战</h1><p>加入课堂，和全班一起玩！</p>
+    <input id="name" maxlength="12" placeholder="输入你的昵称">
+    <button id="joinBtn" class="primary big">加入游戏</button><div id="joinMsg" class="error"></div>
+  </div>
+  <div id="waitView" class="mobile-card" hidden><div class="emoji">🎮</div><h2>加入成功！</h2><p>你是 <b id="team"></b></p><p>等待老师开始游戏…</p></div>
+  <div id="questionView" class="mobile-card" hidden>
+    <div id="mobileRound" class="round"></div><h2 id="mobileTitle"></h2><div id="mobileQuestion" class="question small"></div>
+    <div id="mobileOptions" class="mobile-options"></div><div id="answerState"></div>
+  </div>
+  <div id="resultView" class="mobile-card" hidden><div class="emoji">🎉</div><h2>游戏结束</h2><p>你的最终得分</p><div id="myScore" class="huge-score">0</div><div id="myRank"></div></div>
+</div>
+<script src="/socket.io/socket.io.js"></script><script src="player.js"></script>
+</body></html>
