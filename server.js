@@ -1,217 +1,30 @@
-const express = require("express");
-const http = require("http");
-const { Server } = require("socket.io");
-const QRCode = require("qrcode");
-const path = require("path");
-
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server, {
-  cors: { origin: "*" },
-  transports: ["websocket", "polling"]
-});
-
-app.use(express.static(path.join(__dirname, "public")));
-
-const PORT = process.env.PORT || 3000;
-const PUBLIC_URL = process.env.PUBLIC_URL || "";
-
-const rooms = new Map();
-
-const questions = [
-  {
-    type: "quiz",
-    title: "极速答题",
-    question: "电功率的国际单位是？",
-    options: ["伏特 V", "安培 A", "瓦特 W", "欧姆 Ω"],
-    answer: 2,
-    points: 100
-  },
-  {
-    type: "quiz",
-    title: "反应挑战",
-    question: "1 kW 等于多少 W？",
-    options: ["10", "100", "1000", "10000"],
-    answer: 2,
-    points: 100
-  },
-  {
-    type: "vote",
-    title: "全班默契挑战",
-    question: "如果明天突然放假，你最想做什么？",
-    options: ["睡觉", "出去玩", "打游戏", "回家"],
-    points: 120
-  },
-  {
-    type: "quiz",
-    title: "图片脑洞（演示版）",
-    question: "哪一种能源属于可再生能源？",
-    options: ["煤炭", "石油", "太阳能", "天然气"],
-    answer: 2,
-    points: 120
-  },
-  {
-    type: "quiz",
-    title: "终极抢答",
-    question: "交流电的英文缩写通常是？",
-    options: ["DC", "AC", "PWM", "CPU"],
-    answer: 1,
-    points: 200
-  }
-];
-
-function makeRoomCode() {
-  let code;
-  do code = String(Math.floor(100000 + Math.random() * 900000));
-  while (rooms.has(code));
-  return code;
-}
-
-function roomPublic(room) {
-  return {
-    code: room.code,
-    state: room.state,
-    current: room.current,
-    players: [...room.players.values()].map(p => ({
-      id: p.id, name: p.name, team: p.team, score: p.score, answered: p.answered
-    }))
-  };
-}
-
-function broadcast(room) {
-  io.to(room.code).emit("room:update", roomPublic(room));
-}
-
-app.get("/api/create-room", async (req, res) => {
-  const code = makeRoomCode();
-  const room = {
-    code,
-    state: "lobby",
-    current: -1,
-    players: new Map(),
-    hostSocket: null,
-    startedAt: null
-  };
-  rooms.set(code, room);
-
-  const base = PUBLIC_URL || `${req.protocol}://${req.get("host")}`;
-  const joinUrl = `${base}/player.html?room=${code}`;
-  const qr = await QRCode.toDataURL(joinUrl, { width: 500, margin: 1 });
-
-  res.json({ code, joinUrl, qr });
-});
-
-app.get("/api/room/:code", (req, res) => {
-  const room = rooms.get(req.params.code);
-  if (!room) return res.status(404).json({ error: "房间不存在" });
-  res.json(roomPublic(room));
-});
-
-io.on("connection", socket => {
-  socket.on("host:join", ({ roomCode }) => {
-    const room = rooms.get(roomCode);
-    if (!room) return socket.emit("error:msg", "房间不存在");
-    room.hostSocket = socket.id;
-    socket.join(roomCode);
-    socket.emit("host:ready", { questions });
-    broadcast(room);
-  });
-
-  socket.on("player:join", ({ roomCode, name }) => {
-    const room = rooms.get(roomCode);
-    if (!room) return socket.emit("join:error", "房间不存在");
-    if (room.state !== "lobby") return socket.emit("join:error", "游戏已经开始");
-    if (room.players.size >= 100) return socket.emit("join:error", "房间已满（100人）");
-
-    const cleanName = String(name || "").trim().slice(0, 12);
-    if (!cleanName) return socket.emit("join:error", "请输入昵称");
-
-    const team = room.players.size % 2 === 0 ? "红队" : "蓝队";
-    room.players.set(socket.id, {
-      id: socket.id, name: cleanName, team, score: 0, answered: false
-    });
-    socket.join(roomCode);
-    socket.data.roomCode = roomCode;
-    socket.data.isPlayer = true;
-    socket.emit("join:ok", { team, playerId: socket.id });
-    broadcast(room);
-  });
-
-  socket.on("host:start", ({ roomCode }) => {
-    const room = rooms.get(roomCode);
-    if (!room || socket.id !== room.hostSocket) return;
-    if (room.players.size === 0) return socket.emit("error:msg", "还没有同学加入");
-    room.state = "playing";
-    room.current = 0;
-    room.startedAt = Date.now();
-    for (const p of room.players.values()) p.answered = false;
-    io.to(roomCode).emit("game:question", {
-      index: 0, total: questions.length, ...questions[0], answer: undefined
-    });
-    broadcast(room);
-  });
-
-  socket.on("player:answer", ({ roomCode, choice }) => {
-    const room = rooms.get(roomCode);
-    if (!room || room.state !== "playing") return;
-    const p = room.players.get(socket.id);
-    if (!p || p.answered) return;
-
-    const q = questions[room.current];
-    p.answered = true;
-
-    if (q.type === "quiz") {
-      if (Number(choice) === q.answer) p.score += q.points;
-    } else if (q.type === "vote") {
-      p.vote = Number(choice);
-    }
-
-    socket.emit("answer:received");
-    broadcast(room);
-  });
-
-  socket.on("host:next", ({ roomCode }) => {
-    const room = rooms.get(roomCode);
-    if (!room || socket.id !== room.hostSocket) return;
-
-    const q = questions[room.current];
-    if (q && q.type === "vote") {
-      const counts = q.options.map(() => 0);
-      for (const p of room.players.values()) {
-        if (Number.isInteger(p.vote) && counts[p.vote] !== undefined) counts[p.vote]++;
-      }
-      const max = Math.max(...counts);
-      for (const p of room.players.values()) {
-        if (Number.isInteger(p.vote) && counts[p.vote] === max) p.score += q.points;
-        delete p.vote;
-      }
-    }
-
-    room.current++;
-    if (room.current >= questions.length) {
-      room.state = "finished";
-      io.to(roomCode).emit("game:finished", roomPublic(room));
-      broadcast(room);
-      return;
-    }
-
-    for (const p of room.players.values()) p.answered = false;
-    const nextQ = questions[room.current];
-    io.to(roomCode).emit("game:question", {
-      index: room.current, total: questions.length, ...nextQ, answer: undefined
-    });
-    broadcast(room);
-  });
-
-  socket.on("disconnect", () => {
-    if (!socket.data.isPlayer) return;
-    const room = rooms.get(socket.data.roomCode);
-    if (!room) return;
-    room.players.delete(socket.id);
-    broadcast(room);
-  });
-});
-
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`班级大作战已启动：http://localhost:${PORT}`);
-});
+const express=require("express"),http=require("http"),path=require("path"),QRCode=require("qrcode");
+const {Server}=require("socket.io"); const app=express(); app.set("trust proxy",1);
+app.use(express.static(path.join(__dirname,"public"))); app.get("/health",(_,r)=>r.send("ok"));
+const server=http.createServer(app),io=new Server(server,{transports:["websocket","polling"]});
+const PORT=process.env.PORT||3000, rooms=new Map(), TOTAL=5, SECS=60;
+const WORDS=[["长颈鹿",["长颈鹿"]],["火箭",["火箭"]],["雨伞",["雨伞","伞"]],["机器人",["机器人"]],["摩天轮",["摩天轮"]],["企鹅",["企鹅"]],["自行车",["自行车","单车"]],["冰淇淋",["冰淇淋","冰激凌","雪糕"]],["飞机",["飞机"]],["向日葵",["向日葵"]]];
+const norm=s=>String(s||"").trim().toLowerCase().replace(/\s|[，。！？,.!?、]/g,"");
+function code(){let c;do c=String(Math.floor(100000+Math.random()*900000));while(rooms.has(c));return c}
+function rank(r){return [...r.players.values()].map(p=>({id:p.id,name:p.name,correct:p.correct,eligible:p.eligible,totalMs:p.totalMs,accuracy:p.eligible?p.correct/p.eligible:0})).sort((a,b)=>b.correct-a.correct||b.accuracy-a.accuracy||a.totalMs-b.totalMs)}
+function pub(r){return{code:r.code,state:r.state,round:r.round,remaining:r.remaining,players:[...r.players.values()].map(p=>({id:p.id,name:p.name})),ranking:rank(r).slice(0,10)}}
+function bc(r){io.to(r.code).emit("room:update",pub(r))}
+function drawer(r){let a=[...r.players.values()].filter(p=>!r.used.has(p.id));if(!a.length){r.used.clear();a=[...r.players.values()]}let p=a[Math.floor(Math.random()*a.length)];r.used.add(p.id);return p}
+function startRound(r){if(r.round>=TOTAL)return finish(r);if(r.players.size<2)return;let d=drawer(r);r.drawer=d.id;r.correctSet=new Set();r.started=Date.now();r.remaining=SECS;r.state="drawing";
+for(const p of r.players.values()){p.answered=false;if(p.id!==d.id)p.eligible++}
+io.to(r.code).emit("round:start",{round:r.round+1,totalRounds:TOTAL,drawerId:d.id,drawerName:d.name,seconds:SECS});
+io.to(d.id).emit("drawer:word",{answer:r.words[r.round][0]});bc(r);
+r.timer=setInterval(()=>{r.remaining--;io.to(r.code).emit("round:tick",{remaining:r.remaining});if(r.remaining<=0)endRound(r)},1000)}
+function endRound(r){if(r.state!=="drawing")return;clearInterval(r.timer);r.state="between";let ans=r.words[r.round][0];io.to(r.code).emit("round:end",{answer:ans,correctCount:r.correctSet.size,nextIn:3});r.round++;bc(r);setTimeout(()=>startRound(r),3000)}
+function finish(r){r.state="finished";io.to(r.code).emit("game:finished",{ranking:rank(r)});bc(r)}
+app.get("/api/create-room",async(req,res)=>{let c=code(),base=`${req.get("x-forwarded-proto")||req.protocol}://${req.get("x-forwarded-host")||req.get("host")}`,join=`${base}/player.html?room=${c}`,qr=await QRCode.toDataURL(join,{width:500,margin:1});
+let words=[...WORDS].sort(()=>Math.random()-.5).slice(0,TOTAL);rooms.set(c,{code:c,state:"lobby",round:0,remaining:0,players:new Map(),host:null,used:new Set(),words});res.json({code:c,joinUrl:join,qr})});
+io.on("connection",s=>{
+s.on("host:join",({roomCode})=>{let r=rooms.get(roomCode);if(!r)return;r.host=s.id;s.join(roomCode);s.data.room=roomCode;bc(r)});
+s.on("player:join",({roomCode,name})=>{let r=rooms.get(roomCode);if(!r)return s.emit("join:error","房间不存在");if(r.state!=="lobby")return s.emit("join:error","游戏已经开始");if(r.players.size>=100)return s.emit("join:error","房间已满");name=String(name||"").trim().slice(0,12);if(!name)return s.emit("join:error","请输入昵称");r.players.set(s.id,{id:s.id,name,correct:0,eligible:0,totalMs:0,answered:false});s.join(roomCode);s.data.room=roomCode;s.data.player=true;s.emit("join:ok");bc(r)});
+s.on("host:start",({roomCode})=>{let r=rooms.get(roomCode);if(!r||r.host!==s.id||r.players.size<2)return;r.round=0;r.used.clear();for(const p of r.players.values()){p.correct=0;p.eligible=0;p.totalMs=0}startRound(r)});
+s.on("draw:stroke",({roomCode,stroke})=>{let r=rooms.get(roomCode);if(r&&r.state==="drawing"&&r.drawer===s.id)s.to(roomCode).emit("draw:stroke",stroke)});
+s.on("draw:clear",({roomCode})=>{let r=rooms.get(roomCode);if(r&&r.drawer===s.id)io.to(roomCode).emit("draw:clear")});
+s.on("guess:submit",({roomCode,guess})=>{let r=rooms.get(roomCode),p=r&&r.players.get(s.id);if(!r||r.state!=="drawing"||!p||s.id===r.drawer||p.answered)return;let aliases=r.words[r.round][1];if(aliases.some(a=>norm(a)===norm(guess))){p.answered=true;p.correct++;let ms=Math.min(SECS*1000,Date.now()-r.started);p.totalMs+=ms;r.correctSet.add(s.id);s.emit("guess:result",{correct:true,elapsed:ms});io.to(roomCode).emit("round:correct-count",{count:r.correctSet.size});bc(r)}else s.emit("guess:result",{correct:false})});
+s.on("disconnect",()=>{let r=rooms.get(s.data.room);if(r&&s.data.player){let was=r.drawer===s.id;r.players.delete(s.id);if(was&&r.state==="drawing")endRound(r);else bc(r)}})
+});server.listen(PORT,"0.0.0.0",()=>console.log("你画我猜V2已启动",PORT));
